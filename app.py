@@ -50,8 +50,19 @@ if debug_mode:
         except Exception as e:
             st.error(f"Google API request failed: {e}")
 
-if not API_KEY or not CSE_ID:
-    st.stop()
+# Always show debug checkbox
+debug_mode = st.checkbox("🛠 Enable Debug Mode", value=True)
+
+if debug_mode:
+    st.header("Debug Mode")
+    st.subheader("Secrets Check")
+    st.write("API_KEY present:", bool(API_KEY))
+    st.write("CSE_ID present:", bool(CSE_ID))
+    if not API_KEY or not CSE_ID:
+        st.warning("⚠️ Google API Key or CSE ID missing! Add them to Streamlit secrets.")
+#/ / / / / / / / 
+#if not API_KEY or not CSE_ID:
+#   st.stop()
 
 # ---------------------------
 # Helper functions

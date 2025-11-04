@@ -1,0 +1,7 @@
+streamlit
+beautifulsoup4
+requests
+duckduckgo_search
+vaderSentiment
+python-dateutil
+pandas

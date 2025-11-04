@@ -1,4 +1,3 @@
-import os
 import re
 import requests
 from urllib.parse import urlparse
@@ -8,6 +7,7 @@ from dateutil import parser as dateparser
 import streamlit as st
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import pandas as pd
 
 # ---------------------------
 # Config
@@ -19,38 +19,14 @@ st.write("Enter a person's name or brand to analyze their web presence.")
 analyzer = SentimentIntensityAnalyzer()
 
 # ---------------------------
-# Secrets & Debug
+# Secrets
 # ---------------------------
 API_KEY = st.secrets.get("GOOGLE_API_KEY")
 CSE_ID = st.secrets.get("GOOGLE_CSE_ID")
 
-debug_mode = st.checkbox("🛠 Enable Debug Mode", value=False)
-
-if debug_mode:
-    st.header("Debug Mode")
-    st.subheader("Secrets Check")
-    st.write("API_KEY present:", bool(API_KEY))
-    st.write("CSE_ID present:", bool(CSE_ID))
-    if not API_KEY or not CSE_ID:
-        st.error("⚠️ Google API Key or CSE ID missing. Add them to Streamlit secrets.")
-    else:
-        # Test a live API request
-        test_query = "Test Query"
-        url = f"https://www.googleapis.com/customsearch/v1?q={test_query}&key={API_KEY}&cx={CSE_ID}&num=1"
-        try:
-            r = requests.get(url, timeout=10)
-            st.write("API response code:", r.status_code)
-            data = r.json()
-            st.write("API response keys:", list(data.keys()))
-            if "items" in data and len(data["items"]) > 0:
-                st.success("✅ API returned results")
-                st.write("First result:", data["items"][0].get("title"), "-", data["items"][0].get("link"))
-            else:
-                st.warning("⚠️ No results returned. Check your CSE settings (must search the entire web).")
-        except Exception as e:
-            st.error(f"Google API request failed: {e}")
-
-# Always show debug checkbox
+# ---------------------------
+# Debug Mode
+# ---------------------------
 debug_mode = st.checkbox("🛠 Enable Debug Mode", value=True)
 
 if debug_mode:
@@ -60,9 +36,26 @@ if debug_mode:
     st.write("CSE_ID present:", bool(CSE_ID))
     if not API_KEY or not CSE_ID:
         st.warning("⚠️ Google API Key or CSE ID missing! Add them to Streamlit secrets.")
-#/ / / / / / / / 
-#if not API_KEY or not CSE_ID:
-#   st.stop()
+    else:
+        if st.button("Test Google API"):
+            test_query = "Test Query"
+            url = f"https://www.googleapis.com/customsearch/v1?q={test_query}&key={API_KEY}&cx={CSE_ID}&num=1"
+            try:
+                r = requests.get(url, timeout=10)
+                st.write("API response code:", r.status_code)
+                data = r.json()
+                st.write("API response keys:", list(data.keys()))
+                if "items" in data and len(data["items"]) > 0:
+                    st.success("✅ API returned results")
+                    st.write("First result:", data["items"][0].get("title"), "-", data["items"][0].get("link"))
+                else:
+                    st.warning("⚠️ No results returned. Check your CSE settings.")
+            except Exception as e:
+                st.error(f"Google API request failed: {e}")
+
+if not API_KEY or not CSE_ID:
+    st.info("Enter valid API_KEY and CSE_ID in Streamlit secrets to enable analysis.")
+    st.stop()
 
 # ---------------------------
 # Helper functions
@@ -199,13 +192,10 @@ with st.form("search"):
     col1,col2,col3 = st.columns([4,3,1])
     name = col1.text_input("Name or brand", placeholder="e.g. Jane Doe")
     company = col2.text_input("Optional: company/employer")
-    submitted = col3.form_submit_button("Analyze")
+    submitted = col3.form_submit_button("Run Analysis")
 
 if not submitted:
-    st.info("Type a name and click Analyze.")
-    st.stop()
-if not name.strip():
-    st.error("Please enter a name.")
+    st.info("Type a name and click Run Analysis.")
     st.stop()
 
 # ---------------------------
@@ -293,7 +283,6 @@ with tab2:
         st.markdown(f"- [{p.get('title') or p['url']}]({p['url']}) ({p['domain']}{rating}{date})")
 
 try:
-    import pandas as pd
     st.download_button("Download CSV", data=pd.DataFrame(parsed).to_csv(index=False),
                        file_name=f"presence_{name.replace(' ','_')}.csv")
 except Exception:

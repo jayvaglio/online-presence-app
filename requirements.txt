@@ -1,7 +1,7 @@
 streamlit
 beautifulsoup4
 requests
-duckduckgo_search
+duckduckgo-search==6.2.5
 vaderSentiment
 python-dateutil
 pandas

@@ -1,13 +1,11 @@
 import os
 import re
-import time
 import requests
 from urllib.parse import urlparse
 from datetime import datetime
 from dateutil import parser as dateparser
 
 import streamlit as st
-from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -23,14 +21,36 @@ def safe_request(url, timeout=6):
     except Exception:
         return None
 
+# ---------------------------
+# Google Custom Search function
+# ---------------------------
 def get_top_results(query, max_results=25):
-    """Use DuckDuckGo Search (DDGS) to get top results."""
-    results = []
-    with DDGS() as ddgs:
-        for r in ddgs.text(query, max_results=max_results):
-            results.append(r)
-    return results[:max_results]
+    """Use Google Custom Search JSON API to get top results."""
+    API_KEY = os.getenv("GOOGLE_API_KEY")
+    CSE_ID = os.getenv("GOOGLE_CSE_ID")
+    if not API_KEY or not CSE_ID:
+        st.error("Google API key or CSE ID not set in Streamlit secrets.")
+        return []
 
+    results = []
+    num = min(max_results, 10)  # Google allows max 10 per request
+    url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CSE_ID}&num={num}"
+    try:
+        r = requests.get(url)
+        data = r.json()
+        for item in data.get("items", []):
+            results.append({
+                "title": item.get("title"),
+                "href": item.get("link"),
+                "body": item.get("snippet")
+            })
+    except Exception as e:
+        st.error(f"Google Search API failed: {e}")
+    return results
+
+# ---------------------------
+# Rating extraction & sentiment
+# ---------------------------
 rating_regexes = [
     re.compile(r'([0-5](?:\.\d)?)[/ ]? ?5'),
     re.compile(r'([0-5](?:\.\d)?)\s*out\s*of\s*5', re.I),
@@ -56,8 +76,8 @@ def extract_rating_from_text(text):
                 continue
     return None
 
-def extract_snippets_and_date(url, ddg_snippet=None):
-    row = {"url": url, "domain": urlparse(url).netloc, "title": "", "snippet": ddg_snippet or "", "rating": None, "date": None}
+def extract_snippets_and_date(url, snippet=None):
+    row = {"url": url, "domain": urlparse(url).netloc, "title": "", "snippet": snippet or "", "rating": None, "date": None}
     r = safe_request(url)
     if not r:
         return row
@@ -128,22 +148,8 @@ def calculate_presence_score(stats):
 # Streamlit UI
 # ---------------------------
 st.set_page_config(page_title="Online Presence Monitor", layout="wide")
-
-st.markdown("""
-<style>
-.report-card{padding:14px;border-radius:12px;box-shadow:0 6px 20px rgba(0,0,0,0.06);background:#fff;}
-.kv{font-weight:600;font-size:18px;}
-.small{color:#666;font-size:13px;}
-.quote{padding:10px;border-radius:8px;margin-bottom:8px;}
-.pos{background:linear-gradient(90deg,#e6ffed,#f8fff9);border-left:4px solid #26a641;}
-.neg{background:linear-gradient(90deg,#fff0f0,#fff7f7);border-left:4px solid #d32f2f;}
-a.source-link{color:#065fd4;text-decoration:none;}
-@media (max-width:700px){.kv{font-size:16px;}}
-</style>
-""", unsafe_allow_html=True)
-
 st.title("🔎 Online Presence Monitor")
-st.write("Enter a person's name or brand to analyze their web presence (prototype).")
+st.write("Enter a person's name or brand to analyze their web presence.")
 
 with st.form("search"):
     col1,col2,col3=st.columns([4,3,1])
@@ -158,15 +164,16 @@ if not name.strip():
     st.error("Please enter a name.")
     st.stop()
 
-with st.spinner("Searching the web (~20–30 s)..."):
-    query=name
-    results=get_top_results(query, max_results=25)
+# ---------------------------
+# Search & analyze
+# ---------------------------
+with st.spinner("Searching the web (~10–15 s)..."):
+    results=get_top_results(name, max_results=25)
     parsed=[]; seen=set()
     for r in results:
-        url=r.get("href") or r.get("url")
-        if not url: continue
-        snippet=r.get("body") or r.get("snippet") or ""
-        info=extract_snippets_and_date(url,snippet)
+        url=r.get("href")
+        snippet=r.get("body") or ""
+        info=extract_snippets_and_date(url, snippet)
         parsed.append(info)
         seen.add(info["domain"])
     num=len(parsed)
@@ -190,26 +197,19 @@ with st.spinner("Searching the web (~20–30 s)..."):
     grade=calculate_presence_score(stats)
 
 # ---------------------------
-# Output
+# Output UI
 # ---------------------------
 left,right=st.columns([2,1])
 with left:
-    st.markdown("<div class='report-card'>", unsafe_allow_html=True)
     st.subheader(f"Overview for: {name}")
     st.write(f"**Sites found:** {stats['num_websites']}")
     st.write(f"**Unique domains:** {stats['unique_domains']}")
     st.write(f"**Average rating:** {stats['avg_rating'] or 'N/A'} /5")
     st.markdown(f"### Overall Grade: {grade['grade']}  ({grade['score']} / 100)")
-    bd=grade["breakdown"]
-    st.write("#### Score breakdown")
-    for k,v in bd.items(): st.write(f"- {k.replace('_',' ').title()}: {v}")
-    st.markdown("</div>", unsafe_allow_html=True)
 with right:
-    st.markdown("<div class='report-card'>", unsafe_allow_html=True)
     st.subheader("Tips")
     st.write("• Add a company name for better context.")
     st.write("• Rerun weekly to track trends.")
-    st.markdown("</div>", unsafe_allow_html=True)
 
 tab1,tab2=st.tabs(["Quotes","Sources"])
 with tab1:
@@ -218,17 +218,17 @@ with tab1:
     if pos:
         st.markdown("**Positive quotes**")
         for q in pos[:10]:
-            st.markdown(f"<div class='quote pos'><b>{q.get('title') or q['domain']}</b> — “{q['quote']}” <br><a class='source-link' href='{q['url']}' target='_blank'>source</a></div>", unsafe_allow_html=True)
+            st.markdown(f"**{q.get('title') or q['domain']}** — “{q['quote']}” [source]({q['url']})")
     if neg:
         st.markdown("**Negative quotes**")
         for q in neg[:10]:
-            st.markdown(f"<div class='quote neg'><b>{q.get('title') or q['domain']}</b> — “{q['quote']}” <br><a class='source-link' href='{q['url']}' target='_blank'>source</a></div>", unsafe_allow_html=True)
+            st.markdown(f"**{q.get('title') or q['domain']}** — “{q['quote']}” [source]({q['url']})")
 with tab2:
     st.subheader("All sources")
     for p in parsed:
         rating=f" — rating {p['rating']}/5" if p['rating'] else ""
         date=f" — {p['date'][:10]}" if p['date'] else ""
-        st.markdown(f"- <a class='source-link' href='{p['url']}' target='_blank'>{p.get('title') or p['url']}</a> ({p['domain']}{rating}{date})", unsafe_allow_html=True)
+        st.markdown(f"- [{p.get('title') or p['url']}]({p['url']}) ({p['domain']}{rating}{date})")
 
 try:
     import pandas as pd

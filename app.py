@@ -8,6 +8,21 @@ from dateutil import parser as dateparser
 import streamlit as st
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+#TESTING
+import streamlit as st
+
+API_KEY = st.secrets.get("GOOGLE_API_KEY")
+CSE_ID = st.secrets.get("GOOGLE_CSE_ID")
+
+st.write("🔹 Checking Google API Key and CSE ID")
+st.write("API_KEY present:", bool(API_KEY))
+st.write("CSE_ID present:", bool(CSE_ID))
+
+if not API_KEY or not CSE_ID:
+    st.error("⚠️ Google API Key or CSE ID missing!")
+    st.stop()
+
+
 
 # ---------------------------
 # Setup

@@ -41,6 +41,22 @@ except Exception as e:
     st.error(f"Google API request failed: {e}")
 
 
+# TESTING 2
+
+import requests
+
+API_KEY = "YOUR_API_KEY"
+CSE_ID = "YOUR_CSE_ID"
+query = "Jane Doe"
+
+url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CSE_ID}&num=5"
+resp = requests.get(url)
+data = resp.json()
+for item in data.get("items", []):
+    print(item["title"], "-", item["link"])
+
+
+
 # END TESTING
 
 

@@ -89,15 +89,17 @@ def extract_rating_from_text(text):
     return None
 
 def extract_snippets_and_date(url, snippet=None):
-    row = {"url": url, "domain": urlparse(url).netloc, "title": "", "snippet": snippet or "", "rating": None, "date": None}
+    row = {"url": url, "domain": urlparse(url).netloc, "title": "", "snippet": snippet or "", 
+           "rating": None, "date": None, "full_text": ""}
     r = safe_request(url)
     if not r:
         return row
     try:
+        text = ""
         soup = BeautifulSoup(r.text, "html.parser")
         row["title"] = soup.title.string.strip() if soup.title and soup.title.string else ""
         meta = soup.find("meta", {"name":"description"}) or soup.find("meta", {"property":"og:description"})
-        text = (meta.get("content") + " ") if meta and meta.get("content") else ""
+        text += (meta.get("content") + " ") if meta and meta.get("content") else ""
         for script in soup.find_all("script", {"type":"application/ld+json"}):
             try:
                 txt = script.string or ""
@@ -114,6 +116,7 @@ def extract_snippets_and_date(url, snippet=None):
         for p in soup.find_all(["p","span","li"]):
             if p.string:
                 text += p.get_text(separator=" ", strip=True) + " "
+        row["full_text"] = text.lower()  # store full lowercase text for company prevalence
         if (lm := r.headers.get("Last-Modified")) and not row["date"]:
             try: row["date"] = dateparser.parse(lm).isoformat()
             except: pass
@@ -223,10 +226,13 @@ with st.spinner("Fetching search results..."):
     dates = [p["date"] for p in parsed if p["date"]]
     most_recent = max(dates) if dates else None
 
+    # Optimized company prevalence
     comp_prev = 0
     if company:
-        matches = sum(1 for p in parsed if safe_request(p["url"]) and company.lower() in safe_request(p["url"]).text.lower())
-        comp_prev = matches/max(1,num)
+        matches = sum(1 for p in parsed if company.lower() in p["full_text"])
+        comp_prev = matches / max(1, num)
+        if debug_mode:
+            st.write(f"Pages containing '{company}': {matches} / {num}")
 
     stats = {
         "num_websites": num,

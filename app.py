@@ -10,10 +10,27 @@ from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # ---------------------------
-# Helper functions
+# Setup
 # ---------------------------
+st.set_page_config(page_title="Online Presence Monitor", layout="wide")
+st.title("🔎 Online Presence Monitor")
+st.write("Enter a person's name or brand to analyze their web presence.")
+
 analyzer = SentimentIntensityAnalyzer()
 
+# ---------------------------
+# Safe secrets access
+# ---------------------------
+API_KEY = st.secrets.get("GOOGLE_API_KEY")
+CSE_ID = st.secrets.get("GOOGLE_CSE_ID")
+
+if not API_KEY or not CSE_ID:
+    st.error("⚠️ Google API Key or CSE ID missing. Please add them to Streamlit secrets.")
+    st.stop()
+
+# ---------------------------
+# Helper functions
+# ---------------------------
 def safe_request(url, timeout=6):
     headers = {"User-Agent": "Mozilla/5.0 (compatible; PresenceMonitor/1.0)"}
     try:
@@ -21,36 +38,6 @@ def safe_request(url, timeout=6):
     except Exception:
         return None
 
-# ---------------------------
-# Google Custom Search function
-# ---------------------------
-def get_top_results(query, max_results=25):
-    """Use Google Custom Search JSON API to get top results."""
-    API_KEY = os.getenv("GOOGLE_API_KEY")
-    CSE_ID = os.getenv("GOOGLE_CSE_ID")
-    if not API_KEY or not CSE_ID:
-        st.error("Google API key or CSE ID not set in Streamlit secrets.")
-        return []
-
-    results = []
-    num = min(max_results, 10)  # Google allows max 10 per request
-    url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CSE_ID}&num={num}"
-    try:
-        r = requests.get(url)
-        data = r.json()
-        for item in data.get("items", []):
-            results.append({
-                "title": item.get("title"),
-                "href": item.get("link"),
-                "body": item.get("snippet")
-            })
-    except Exception as e:
-        st.error(f"Google Search API failed: {e}")
-    return results
-
-# ---------------------------
-# Rating extraction & sentiment
-# ---------------------------
 rating_regexes = [
     re.compile(r'([0-5](?:\.\d)?)[/ ]? ?5'),
     re.compile(r'([0-5](?:\.\d)?)\s*out\s*of\s*5', re.I),
@@ -145,17 +132,35 @@ def calculate_presence_score(stats):
                          "company_score":round(comp_score,1)}}
 
 # ---------------------------
-# Streamlit UI
+# Google API search
 # ---------------------------
-st.set_page_config(page_title="Online Presence Monitor", layout="wide")
-st.title("🔎 Online Presence Monitor")
-st.write("Enter a person's name or brand to analyze their web presence.")
+def get_top_results(query, max_results=25):
+    results = []
+    try:
+        for start in range(1, max_results+1, 10):  # pagination
+            url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CSE_ID}&num={min(max_results,10)}&start={start}"
+            r = requests.get(url)
+            data = r.json()
+            for item in data.get("items", []):
+                results.append({
+                    "title": item.get("title"),
+                    "href": item.get("link"),
+                    "body": item.get("snippet")
+                })
+            if len(results) >= max_results:
+                break
+    except Exception as e:
+        st.error(f"Google Search API failed: {e}")
+    return results[:max_results]
 
+# ---------------------------
+# User input
+# ---------------------------
 with st.form("search"):
-    col1,col2,col3=st.columns([4,3,1])
-    name=col1.text_input("Name or brand", placeholder="e.g. Jane Doe")
-    company=col2.text_input("Optional: company/employer")
-    submitted=col3.form_submit_button("Analyze")
+    col1,col2,col3 = st.columns([4,3,1])
+    name = col1.text_input("Name or brand", placeholder="e.g. Jane Doe")
+    company = col2.text_input("Optional: company/employer")
+    submitted = col3.form_submit_button("Analyze")
 
 if not submitted:
     st.info("Type a name and click Analyze.")
@@ -165,56 +170,70 @@ if not name.strip():
     st.stop()
 
 # ---------------------------
-# Search & analyze
+# Fetch and analyze
 # ---------------------------
-with st.spinner("Searching the web (~10–15 s)..."):
-    results=get_top_results(name, max_results=25)
-    parsed=[]; seen=set()
+with st.spinner("Fetching search results..."):
+    results = get_top_results(name, max_results=25)
+    parsed = []
+    seen = set()
     for r in results:
-        url=r.get("href")
-        snippet=r.get("body") or ""
-        info=extract_snippets_and_date(url, snippet)
+        url = r.get("href")
+        snippet = r.get("body") or ""
+        info = extract_snippets_and_date(url, snippet)
         parsed.append(info)
         seen.add(info["domain"])
-    num=len(parsed)
-    ratings=[p["rating"] for p in parsed if p["rating"]]
-    avg_rating=round(sum(ratings)/len(ratings),2) if ratings else None
-    quotes=[]
+
+    num = len(parsed)
+    ratings = [p["rating"] for p in parsed if p["rating"]]
+    avg_rating = round(sum(ratings)/len(ratings),2) if ratings else None
+
+    quotes = []
     for p in parsed:
-        s=p["snippet"] or ""
-        sentences=re.split(r'(?<=[.!?])\s+',s)
-        selected=next((sent for sent in sentences if name.lower().split()[0] in sent.lower()), s[:240])
-        quotes.append({**p,"quote":selected,"sentiment":sentiment_score(selected)})
-    avg_sent=round(sum(q["sentiment"] for q in quotes)/len(quotes),3) if quotes else 0
-    dates=[p["date"] for p in parsed if p["date"]]
-    most_recent=max(dates) if dates else None
-    comp_prev=0
+        s = p["snippet"] or ""
+        sentences = re.split(r'(?<=[.!?])\s+', s)
+        selected = next((sent for sent in sentences if name.lower().split()[0] in sent.lower()), s[:240])
+        quotes.append({**p, "quote": selected, "sentiment": sentiment_score(selected)})
+
+    avg_sent = round(sum(q["sentiment"] for q in quotes)/len(quotes),3) if quotes else 0
+    dates = [p["date"] for p in parsed if p["date"]]
+    most_recent = max(dates) if dates else None
+
+    comp_prev = 0
     if company:
-        matches=sum(1 for p in parsed if safe_request(p["url"]) and company.lower() in safe_request(p["url"]).text.lower())
-        comp_prev=matches/max(1,num)
-    stats={"num_websites":num,"unique_domains":len(seen),"avg_rating":avg_rating,
-           "avg_sentiment":avg_sent,"most_recent_date":most_recent,"company_prevalence":comp_prev}
-    grade=calculate_presence_score(stats)
+        matches = sum(1 for p in parsed if safe_request(p["url"]) and company.lower() in safe_request(p["url"]).text.lower())
+        comp_prev = matches/max(1,num)
+
+    stats = {
+        "num_websites": num,
+        "unique_domains": len(seen),
+        "avg_rating": avg_rating,
+        "avg_sentiment": avg_sent,
+        "most_recent_date": most_recent,
+        "company_prevalence": comp_prev
+    }
+
+    grade = calculate_presence_score(stats)
 
 # ---------------------------
-# Output UI
+# Output
 # ---------------------------
-left,right=st.columns([2,1])
+left,right = st.columns([2,1])
 with left:
     st.subheader(f"Overview for: {name}")
     st.write(f"**Sites found:** {stats['num_websites']}")
     st.write(f"**Unique domains:** {stats['unique_domains']}")
     st.write(f"**Average rating:** {stats['avg_rating'] or 'N/A'} /5")
     st.markdown(f"### Overall Grade: {grade['grade']}  ({grade['score']} / 100)")
+
 with right:
     st.subheader("Tips")
     st.write("• Add a company name for better context.")
     st.write("• Rerun weekly to track trends.")
 
-tab1,tab2=st.tabs(["Quotes","Sources"])
+tab1, tab2 = st.tabs(["Quotes","Sources"])
 with tab1:
-    pos=[q for q in quotes if q["sentiment"]>=0.2]
-    neg=[q for q in quotes if q["sentiment"]<=-0.2]
+    pos = [q for q in quotes if q["sentiment"] >= 0.2]
+    neg = [q for q in quotes if q["sentiment"] <= -0.2]
     if pos:
         st.markdown("**Positive quotes**")
         for q in pos[:10]:
@@ -223,11 +242,12 @@ with tab1:
         st.markdown("**Negative quotes**")
         for q in neg[:10]:
             st.markdown(f"**{q.get('title') or q['domain']}** — “{q['quote']}” [source]({q['url']})")
+
 with tab2:
     st.subheader("All sources")
     for p in parsed:
-        rating=f" — rating {p['rating']}/5" if p['rating'] else ""
-        date=f" — {p['date'][:10]}" if p['date'] else ""
+        rating = f" — rating {p['rating']}/5" if p['rating'] else ""
+        date = f" — {p['date'][:10]}" if p['date'] else ""
         st.markdown(f"- [{p.get('title') or p['url']}]({p['url']}) ({p['domain']}{rating}{date})")
 
 try:

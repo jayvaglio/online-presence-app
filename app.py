@@ -22,6 +22,26 @@ if not API_KEY or not CSE_ID:
     st.error("⚠️ Google API Key or CSE ID missing!")
     st.stop()
 
+#- - - 
+import requests
+
+query = "Test Query"
+url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CSE_ID}&num=1"
+
+try:
+    r = requests.get(url, timeout=10)
+    st.write("API response code:", r.status_code)
+    data = r.json()
+    st.write("API response keys:", list(data.keys()))
+    if "items" in data:
+        st.write("First result:", data["items"][0].get("title"), "-", data["items"][0].get("link"))
+    else:
+        st.warning("No results returned from Google API. Check your CSE configuration.")
+except Exception as e:
+    st.error(f"Google API request failed: {e}")
+
+
+# END TESTING
 
 
 # ---------------------------

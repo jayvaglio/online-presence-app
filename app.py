@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # ---------------------------
-# Streamlit Page Config
+# Config
 # ---------------------------
 st.set_page_config(page_title="Online Presence Monitor", layout="wide")
 st.title("🔎 Online Presence Monitor")
@@ -19,23 +19,21 @@ st.write("Enter a person's name or brand to analyze their web presence.")
 analyzer = SentimentIntensityAnalyzer()
 
 # ---------------------------
-# Debug Mode Toggle
-# ---------------------------
-DEBUG_MODE = st.sidebar.checkbox("Enable Debug Mode", value=False)
-
-# ---------------------------
-# Safe Secrets Access
+# Secrets & Debug
 # ---------------------------
 API_KEY = st.secrets.get("GOOGLE_API_KEY")
 CSE_ID = st.secrets.get("GOOGLE_CSE_ID")
 
-if DEBUG_MODE:
-    st.header("🛠 Debug Mode")
+debug_mode = st.checkbox("🛠 Enable Debug Mode", value=False)
+
+if debug_mode:
+    st.header("Debug Mode")
     st.subheader("Secrets Check")
     st.write("API_KEY present:", bool(API_KEY))
     st.write("CSE_ID present:", bool(CSE_ID))
-
-    if API_KEY and CSE_ID:
+    if not API_KEY or not CSE_ID:
+        st.error("⚠️ Google API Key or CSE ID missing. Add them to Streamlit secrets.")
+    else:
         # Test a live API request
         test_query = "Test Query"
         url = f"https://www.googleapis.com/customsearch/v1?q={test_query}&key={API_KEY}&cx={CSE_ID}&num=1"
@@ -51,15 +49,12 @@ if DEBUG_MODE:
                 st.warning("⚠️ No results returned. Check your CSE settings (must search the entire web).")
         except Exception as e:
             st.error(f"Google API request failed: {e}")
-    else:
-        st.error("⚠️ Missing API_KEY or CSE_ID.")
 
 if not API_KEY or not CSE_ID:
-    st.error("⚠️ Google API Key or CSE ID missing. Add them to Streamlit secrets.")
     st.stop()
 
 # ---------------------------
-# Helper Functions
+# Helper functions
 # ---------------------------
 def safe_request(url, timeout=6):
     headers = {"User-Agent": "Mozilla/5.0 (compatible; PresenceMonitor/1.0)"}
@@ -162,31 +157,29 @@ def calculate_presence_score(stats):
                          "company_score":round(comp_score,1)}}
 
 # ---------------------------
-# Google API search with pagination
+# Google API search
 # ---------------------------
 def get_top_results(query, max_results=25):
     results = []
     try:
         for start in range(1, max_results+1, 10):  # pagination
             url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CSE_ID}&num={min(max_results,10)}&start={start}"
-            r = requests.get(url, timeout=10)
+            r = requests.get(url)
             data = r.json()
-            if DEBUG_MODE:
-                st.write(f"Fetched page starting at {start}: {len(data.get('items', []))} items")
             for item in data.get("items", []):
                 results.append({
                     "title": item.get("title"),
                     "href": item.get("link"),
                     "body": item.get("snippet")
                 })
-            if len(results) >= max_results or not data.get("items"):
+            if len(results) >= max_results:
                 break
     except Exception as e:
         st.error(f"Google Search API failed: {e}")
     return results[:max_results]
 
 # ---------------------------
-# User Input
+# User input form
 # ---------------------------
 with st.form("search"):
     col1,col2,col3 = st.columns([4,3,1])
@@ -202,7 +195,7 @@ if not name.strip():
     st.stop()
 
 # ---------------------------
-# Fetch and Analyze
+# Fetch and analyze
 # ---------------------------
 with st.spinner("Fetching search results..."):
     results = get_top_results(name, max_results=25)
@@ -247,7 +240,7 @@ with st.spinner("Fetching search results..."):
     grade = calculate_presence_score(stats)
 
 # ---------------------------
-# Display Output
+# Output UI
 # ---------------------------
 left,right = st.columns([2,1])
 with left:
@@ -271,4 +264,20 @@ with tab1:
         for q in pos[:10]:
             st.markdown(f"**{q.get('title') or q['domain']}** — “{q['quote']}” [source]({q['url']})")
     if neg:
-        st.markdown("**Negative
+        st.markdown("**Negative quotes**")
+        for q in neg[:10]:
+            st.markdown(f"**{q.get('title') or q['domain']}** — “{q['quote']}” [source]({q['url']})")
+
+with tab2:
+    st.subheader("All sources")
+    for p in parsed:
+        rating = f" — rating {p['rating']}/5" if p['rating'] else ""
+        date = f" — {p['date'][:10]}" if p['date'] else ""
+        st.markdown(f"- [{p.get('title') or p['url']}]({p['url']}) ({p['domain']}{rating}{date})")
+
+try:
+    import pandas as pd
+    st.download_button("Download CSV", data=pd.DataFrame(parsed).to_csv(index=False),
+                       file_name=f"presence_{name.replace(' ','_')}.csv")
+except Exception:
+    pass

@@ -120,7 +120,7 @@ def extract_snippets_and_date(url, snippet=None):
         for p in soup.find_all(["p","span","li"]):
             if p.string:
                 text += p.get_text(separator=" ", strip=True) + " "
-        row["full_text"] = text.lower()  # store full lowercase text for company prevalence
+        row["full_text"] = text.lower()
         if (lm := r.headers.get("Last-Modified")) and not row["date"]:
             try: row["date"] = dateparser.parse(lm).isoformat()
             except: pass
@@ -164,12 +164,12 @@ def calculate_presence_score(stats):
                          "company_score":round(comp_score,1)}}
 
 # ---------------------------
-# Google API search
+# Google Custom Search
 # ---------------------------
 def get_top_results(query, max_results=25):
     results = []
     try:
-        for start in range(1, max_results+1, 10):  # pagination
+        for start in range(1, max_results+1, 10):
             url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={API_KEY}&cx={CSE_ID}&num={min(max_results,10)}&start={start}"
             r = requests.get(url)
             data = r.json()
@@ -184,6 +184,30 @@ def get_top_results(query, max_results=25):
     except Exception as e:
         st.error(f"Google Search API failed: {e}")
     return results[:max_results]
+
+# ---------------------------
+# Google Places Reviews
+# ---------------------------
+@st.cache_data(ttl=3600)
+def get_google_reviews(name):
+    """Fetch Google Places reviews for people or brands."""
+    try:
+        search_url = f"https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input={name}&inputtype=textquery&fields=place_id,name,formatted_address&key={API_KEY}"
+        r = requests.get(search_url)
+        data = r.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return None
+        place = candidates[0]
+        place_id = place["place_id"]
+        details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,rating,user_ratings_total,reviews,url&key={API_KEY}"
+        r2 = requests.get(details_url)
+        details = r2.json().get("result", {})
+        return details
+    except Exception as e:
+        if debug_mode:
+            st.error(f"Google Places API error: {e}")
+        return None
 
 # ---------------------------
 # User input form
@@ -202,6 +226,7 @@ if not submitted:
 # Fetch and analyze
 # ---------------------------
 with st.spinner("Fetching search results..."):
+    # Custom Search
     results = get_top_results(name, max_results=25)
     parsed = []
     seen = set()
@@ -246,9 +271,13 @@ with st.spinner("Fetching search results..."):
 
     grade = calculate_presence_score(stats)
 
+    # Google Reviews
+    g_reviews = get_google_reviews(name)
+
 # ---------------------------
 # Output UI
 # ---------------------------
+# Overview
 left,right = st.columns([2,1])
 with left:
     st.subheader(f"Overview for: {name}")
@@ -262,7 +291,9 @@ with right:
     st.write("• Add a company name for better context.")
     st.write("• Rerun weekly to track trends.")
 
-tab1, tab2 = st.tabs(["Quotes","Sources"])
+# Tabs
+tab1, tab2, tab3 = st.tabs(["Quotes","Sources","Google Reviews"])
+
 with tab1:
     pos = [q for q in quotes if q["sentiment"] >= 0.2]
     neg = [q for q in quotes if q["sentiment"] <= -0.2]
@@ -282,6 +313,27 @@ with tab2:
         date = f" — {p['date'][:10]}" if p['date'] else ""
         st.markdown(f"- [{p.get('title') or p['url']}]({p['url']}) ({p['domain']}{rating}{date})")
 
+with tab3:
+    st.subheader("Google Maps Reviews")
+    if not g_reviews:
+        st.info("No Google Reviews found for this person or brand.")
+    else:
+        avg_r = g_reviews.get("rating")
+        total_r = g_reviews.get("user_ratings_total")
+        maps_url = g_reviews.get("url")
+        st.write(f"⭐ **Average Rating:** {avg_r} ({total_r} reviews)")
+        if maps_url:
+            st.markdown(f"[View on Google Maps]({maps_url})")
+        revs = g_reviews.get("reviews", [])
+        for r in revs[:5]:
+            author = r.get("author_name", "Anonymous")
+            text = r.get("text", "")
+            relative_time = r.get("relative_time_description","")
+            st.markdown(f"“{text}” — {author} ({relative_time})")
+        if debug_mode:
+            st.write("Raw Google Reviews API response:", g_reviews)
+
+# CSV Download
 try:
     st.download_button("Download CSV", data=pd.DataFrame(parsed).to_csv(index=False),
                        file_name=f"presence_{name.replace(' ','_')}.csv")

@@ -3,18 +3,18 @@ import requests
 from urllib.parse import urlparse
 from datetime import datetime
 from dateutil import parser as dateparser
-
 import streamlit as st
 from bs4 import BeautifulSoup
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import pandas as pd
+import plotly.express as px
 
 # ---------------------------
 # Config
 # ---------------------------
 st.set_page_config(page_title="Online Presence Monitor", layout="wide")
 st.title("🔎 Online Presence Monitor")
-st.write("Enter a person's name or brand to analyze their web presence.")
+st.write("Analyze a person's or brand's online presence across multiple sources.")
 
 analyzer = SentimentIntensityAnalyzer()
 
@@ -31,27 +31,10 @@ debug_mode = st.checkbox("🛠 Enable Debug Mode", value=True)
 
 if debug_mode:
     st.header("Debug Mode")
-    st.subheader("Secrets Check")
     st.write("API_KEY present:", bool(API_KEY))
     st.write("CSE_ID present:", bool(CSE_ID))
     if not API_KEY or not CSE_ID:
         st.warning("⚠️ Google API Key or CSE ID missing! Add them to Streamlit secrets.")
-    else:
-        if st.button("Test Google API"):
-            test_query = "Test Query"
-            url = f"https://www.googleapis.com/customsearch/v1?q={test_query}&key={API_KEY}&cx={CSE_ID}&num=1"
-            try:
-                r = requests.get(url, timeout=10)
-                st.write("API response code:", r.status_code)
-                data = r.json()
-                st.write("API response keys:", list(data.keys()))
-                if "items" in data and len(data["items"]) > 0:
-                    st.success("✅ API returned results")
-                    st.write("First result:", data["items"][0].get("title"), "-", data["items"][0].get("link"))
-                else:
-                    st.warning("⚠️ No results returned. Check your CSE settings.")
-            except Exception as e:
-                st.error(f"Google API request failed: {e}")
 
 if not API_KEY or not CSE_ID:
     st.info("Enter valid API_KEY and CSE_ID in Streamlit secrets to enable analysis.")
@@ -104,31 +87,13 @@ def extract_snippets_and_date(url, snippet=None):
         row["title"] = soup.title.string.strip() if soup.title and soup.title.string else ""
         meta = soup.find("meta", {"name":"description"}) or soup.find("meta", {"property":"og:description"})
         text += (meta.get("content") + " ") if meta and meta.get("content") else ""
-        for script in soup.find_all("script", {"type":"application/ld+json"}):
-            try:
-                txt = script.string or ""
-                if "ratingValue" in txt:
-                    m = re.search(r'"ratingValue"\s*:\s*"?(?P<v>[0-5](?:\.\d)?)"?', txt)
-                    if m:
-                        row["rating"] = float(m.group('v'))
-                if "datePublished" in txt and not row["date"]:
-                    m2 = re.search(r'"datePublished"\s*:\s*"(.*?)"', txt)
-                    if m2:
-                        row["date"] = dateparser.parse(m2.group(1)).isoformat()
-            except:
-                continue
-        for p in soup.find_all(["p","span","li"]):
-            if p.string:
-                text += p.get_text(separator=" ", strip=True) + " "
+        for script in soup.find_all(["p","span","li"]):
+            if script.string:
+                text += script.get_text(separator=" ", strip=True) + " "
         row["full_text"] = text.lower()
-        if (lm := r.headers.get("Last-Modified")) and not row["date"]:
-            try: row["date"] = dateparser.parse(lm).isoformat()
-            except: pass
-        if not row["rating"]:
-            rating = extract_rating_from_text(text[:8000])
-            if rating: row["rating"] = rating
         if not row["snippet"]:
             row["snippet"] = (text.strip()[:300] + "...") if text else ""
+        row["rating"] = extract_rating_from_text(text[:8000])
     except Exception:
         pass
     return row
@@ -189,10 +154,11 @@ def get_top_results(query, max_results=25):
 # Google Places Reviews
 # ---------------------------
 @st.cache_data(ttl=3600)
-def get_google_reviews(name):
-    """Fetch Google Places reviews for people or brands."""
+def get_google_reviews(name, city=None):
+    """Fetch Google Places reviews if available."""
     try:
-        search_url = f"https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input={name}&inputtype=textquery&fields=place_id,name,formatted_address&key={API_KEY}"
+        query = f"{name} {city}" if city else name
+        search_url = f"https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input={query}&inputtype=textquery&fields=place_id,name,formatted_address&key={API_KEY}"
         r = requests.get(search_url)
         data = r.json()
         candidates = data.get("candidates", [])
@@ -210,13 +176,51 @@ def get_google_reviews(name):
         return None
 
 # ---------------------------
+# Direct HTML Parsing for Review Sites
+# ---------------------------
+@st.cache_data(ttl=3600)
+def parse_site_reviews(name, city=None):
+    """Scrape Healthgrades, Glassdoor, Yelp, RateMDs (top 5 each)"""
+    reviews = []
+
+    # Define site search patterns
+    site_patterns = {
+        "Healthgrades": f"https://www.healthgrades.com/search?what={name}&where={city or ''}",
+        "Glassdoor": f"https://www.glassdoor.com/Reviews/{name.replace(' ','-')}-Reviews.htm",
+        # Add Yelp, RateMDs, etc.
+    }
+
+    for site, url in site_patterns.items():
+        r = safe_request(url)
+        if not r:
+            continue
+        try:
+            soup = BeautifulSoup(r.text, "html.parser")
+            # Simple heuristic: find first 5 reviews
+            rev_blocks = soup.find_all("div", class_=re.compile("review|rating"), limit=5)
+            for rb in rev_blocks[:5]:
+                text = rb.get_text(separator=" ", strip=True)
+                rating = extract_rating_from_text(text)
+                reviews.append({
+                    "site": site,
+                    "text": text,
+                    "rating": rating,
+                    "url": url
+                })
+        except Exception:
+            continue
+    return reviews
+
+# ---------------------------
 # User input form
 # ---------------------------
 with st.form("search"):
-    col1,col2,col3 = st.columns([4,3,1])
+    col1,col2,col3,col4 = st.columns([3,2,2,2])
     name = col1.text_input("Name or brand", placeholder="e.g. Jane Doe")
-    company = col2.text_input("Optional: company/employer")
-    submitted = col3.form_submit_button("Run Analysis")
+    company = col2.text_input("Company / Employer (optional)")
+    city = col3.text_input("City / Location (optional)")
+    category = col4.text_input("Profession / Category (optional)")
+    submitted = st.form_submit_button("Run Analysis")
 
 if not submitted:
     st.info("Type a name and click Run Analysis.")
@@ -226,8 +230,10 @@ if not submitted:
 # Fetch and analyze
 # ---------------------------
 with st.spinner("Fetching search results..."):
-    # Custom Search
-    results = get_top_results(name, max_results=25)
+    # Google CSE
+    query_terms = [name, company, city, category]
+    query = " ".join([t for t in query_terms if t])
+    results = get_top_results(query, max_results=25)
     parsed = []
     seen = set()
     for r in results:
@@ -252,13 +258,10 @@ with st.spinner("Fetching search results..."):
     dates = [p["date"] for p in parsed if p["date"]]
     most_recent = max(dates) if dates else None
 
-    # Optimized company prevalence
     comp_prev = 0
     if company:
         matches = sum(1 for p in parsed if company.lower() in p["full_text"])
         comp_prev = matches / max(1, num)
-        if debug_mode:
-            st.write(f"Pages containing '{company}': {matches} / {num}")
 
     stats = {
         "num_websites": num,
@@ -271,13 +274,15 @@ with st.spinner("Fetching search results..."):
 
     grade = calculate_presence_score(stats)
 
-    # Google Reviews
-    g_reviews = get_google_reviews(name)
+    # Google Places reviews
+    g_reviews = get_google_reviews(name, city)
+
+    # Direct site reviews
+    fallback_reviews = parse_site_reviews(name, city)
 
 # ---------------------------
 # Output UI
 # ---------------------------
-# Overview
 left,right = st.columns([2,1])
 with left:
     st.subheader(f"Overview for: {name}")
@@ -286,13 +291,30 @@ with left:
     st.write(f"**Average rating:** {stats['avg_rating'] or 'N/A'} /5")
     st.markdown(f"### Overall Grade: {grade['grade']}  ({grade['score']} / 100)")
 
+    # Radar chart
+    radar_df = pd.DataFrame([grade['breakdown']])
+    radar_df = radar_df.melt(var_name="Category", value_name="Score")
+    fig = px.line_polar(radar_df, r='Score', theta='Category', line_close=True, title="Presence Breakdown", range_r=[0,100])
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Tips
+    st.subheader("Tips & Recommendations")
+    if avg_rating and avg_rating < 3.5:
+        st.write("• Average rating is low — consider addressing negative feedback and improving service quality.")
+    if stats['num_websites'] < 10:
+        st.write("• Limited online presence — consider publishing content, social media engagement, or press mentions.")
+    if avg_sent < -0.2:
+        st.write("• Negative sentiment detected — proactive PR or response to reviews may help.")
+    if avg_rating and avg_rating > 4.0 and num < 10:
+        st.write("• High ratings but few mentions — encourage satisfied clients/customers to leave reviews.")
+
 with right:
-    st.subheader("Tips")
-    st.write("• Add a company name for better context.")
-    st.write("• Rerun weekly to track trends.")
+    st.subheader("Tips for Further Exploration")
+    st.write("• Try including city or profession to improve result accuracy.")
+    st.write("• Refresh weekly to track trends.")
 
 # Tabs
-tab1, tab2, tab3 = st.tabs(["Quotes","Sources","Google Reviews"])
+tab1, tab2, tab3, tab4 = st.tabs(["Quotes","Sources","Google Reviews","Other Sites Reviews"])
 
 with tab1:
     pos = [q for q in quotes if q["sentiment"] >= 0.2]
@@ -315,7 +337,7 @@ with tab2:
 
 with tab3:
     st.subheader("Google Maps Reviews")
-    if not g_reviews:
+    if not g_reviews or not g_reviews.get("reviews"):
         st.info("No Google Reviews found for this person or brand.")
     else:
         avg_r = g_reviews.get("rating")
@@ -332,6 +354,14 @@ with tab3:
             st.markdown(f"“{text}” — {author} ({relative_time})")
         if debug_mode:
             st.write("Raw Google Reviews API response:", g_reviews)
+
+with tab4:
+    st.subheader("Top Reviews from Other Sites")
+    if not fallback_reviews:
+        st.info("No reviews found from other sites.")
+    else:
+        for r in fallback_reviews:
+            st.markdown(f"**{r['site']}** ⭐ {r['rating']}/5 — “{r['text']}” [source]({r['url']})")
 
 # CSV Download
 try:

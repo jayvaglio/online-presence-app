@@ -3,32 +3,27 @@ import streamlit as st
 import requests, json, re
 from bs4 import BeautifulSoup
 import plotly.express as px
-from datetime import datetime
 from urllib.parse import quote_plus
 
-# -----------------------------
-# CONFIG
-# -----------------------------
 st.set_page_config(page_title="Online Presence Monitor", layout="wide")
 debug_mode = st.sidebar.checkbox("Enable Debug Mode")
 
-# Set your Google API / CSE keys in Streamlit Secrets
+# -----------------------------
+# CONFIG: SINGLE GOOGLE API KEY
+# -----------------------------
 API_KEY = st.secrets.get("GOOGLE_API_KEY")
-CSE_ID = st.secrets.get("GOOGLE_CSE_ID")
-GOOGLE_PLACES_KEY = st.secrets.get("GOOGLE_PLACES_KEY")
+CSE_ID = st.secrets.get("CSE_ID")
 
 MAX_REVIEWS = 5
 
 # -----------------------------
 # UTILITIES
 # -----------------------------
-
 def get_top_results(query, max_results=10):
-    """Get top URLs from Google CSE"""
     urls = []
     if not API_KEY or not CSE_ID:
         if debug_mode:
-            st.write("[get_top_results] Missing API_KEY/CSE_ID; returning empty list.")
+            st.write("[get_top_results] Missing API_KEY/CSE_ID.")
         return urls
     search_url = f"https://www.googleapis.com/customsearch/v1?q={quote_plus(query)}&cx={CSE_ID}&key={API_KEY}&num={max_results}"
     try:
@@ -46,22 +41,14 @@ def get_top_results(query, max_results=10):
     return urls
 
 # -----------------------------
-# YELP JSON REVIEW FETCH
+# YELP REVIEWS (JSON via CSE)
 # -----------------------------
-
 @st.cache_data(ttl=3600)
 def fetch_yelp_reviews_json(query, max_reviews=MAX_REVIEWS):
-    """
-    Uses Google CSE to locate Yelp /biz/ URLs, then fetches JSON reviews.
-    Returns list of reviews with text, rating, author, time.
-    """
     out = []
     if not API_KEY or not CSE_ID:
-        if debug_mode:
-            st.write("[fetch_yelp_reviews_json] Missing API_KEY/CSE_ID; skipping Yelp fetch.")
         return out
 
-    # 1) Find Yelp URL via Google CSE
     cse_q = f"{query} site:yelp.com"
     if debug_mode:
         st.write(f"[fetch_yelp_reviews_json] CSE query: {cse_q}")
@@ -69,45 +56,32 @@ def fetch_yelp_reviews_json(query, max_reviews=MAX_REVIEWS):
 
     yelp_biz_url = None
     for c in candidates:
-        href = c.get("href", "")
+        href = c.get("href","")
         if "/biz/" in href:
             yelp_biz_url = href.split("?")[0]
             break
-
     if not yelp_biz_url:
-        if debug_mode:
-            st.write("[fetch_yelp_reviews_json] No /biz/ URL found via CSE.")
         return out
 
     if debug_mode:
         st.write(f"[fetch_yelp_reviews_json] Found Yelp biz URL: {yelp_biz_url}")
 
-    # Extract alias
-    try:
-        alias = yelp_biz_url.rstrip("/").split("/biz/")[-1].split("/")[0]
-    except:
-        return out
-
-    # JSON feed URL
+    alias = yelp_biz_url.rstrip("/").split("/biz/")[-1].split("/")[0]
     feed_url = f"https://www.yelp.com/biz/{alias}/review_feed?start=0&sort_by=date_desc"
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; PresenceMonitor/1.0)",
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Referer": yelp_biz_url
     }
-
     try:
         r = requests.get(feed_url, headers=headers, timeout=10)
         if r.status_code != 200:
             if debug_mode:
                 st.write(f"[fetch_yelp_reviews_json] Yelp feed returned status {r.status_code}")
             return out
-
-        # JSON or HTML containing JSON
         try:
             data = r.json()
         except Exception:
-            # Try regex extraction
             m = re.search(r"(\{.*\"reviews\":\s*\[.*\]\s*\})", r.text, re.S)
             if m:
                 data = json.loads(m.group(1))
@@ -116,7 +90,7 @@ def fetch_yelp_reviews_json(query, max_reviews=MAX_REVIEWS):
 
         reviews = data.get("reviews") or data.get("review_list") or []
         if debug_mode:
-            st.write(f"[fetch_yelp_reviews_json] JSON reviews count: {len(reviews)}")
+            st.write(f"[fetch_yelp_reviews_json] Reviews count: {len(reviews)}")
 
         for idx, rv in enumerate(reviews):
             if idx >= max_reviews:
@@ -140,68 +114,13 @@ def fetch_yelp_reviews_json(query, max_reviews=MAX_REVIEWS):
     return out[:max_reviews]
 
 # -----------------------------
-# HEALTHGRADES / GLASSDOOR SCRAPER (HTML-based)
-# -----------------------------
-@st.cache_data(ttl=3600)
-def fetch_healthgrades_reviews(query, max_reviews=MAX_REVIEWS):
-    """Simple HTML parser for Healthgrades reviews"""
-    out = []
-    search_url = f"https://www.healthgrades.com/search?query={quote_plus(query)}"
-    try:
-        r = requests.get(search_url, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-        review_blocks = soup.select(".review-card")[:max_reviews]
-        for blk in review_blocks:
-            text = blk.select_one(".review-text")
-            rating = blk.select_one(".rating-stars")
-            author = blk.select_one(".reviewer-name")
-            out.append({
-                "site": "Healthgrades",
-                "text": text.get_text(strip=True) if text else "",
-                "rating": float(rating.get("data-rating")) if rating else None,
-                "url": search_url,
-                "author": author.get_text(strip=True) if author else "",
-                "time": ""
-            })
-    except Exception as e:
-        if debug_mode:
-            st.write(f"[fetch_healthgrades_reviews] Error: {e}")
-    return out
-
-@st.cache_data(ttl=3600)
-def fetch_glassdoor_reviews(query, max_reviews=MAX_REVIEWS):
-    """Simple HTML parser for Glassdoor reviews"""
-    out = []
-    search_url = f"https://www.glassdoor.com/Reviews/{quote_plus(query)}-reviews-SRCH_KE0,50.htm"
-    try:
-        r = requests.get(search_url, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-        review_blocks = soup.select(".empReview")[:max_reviews]
-        for blk in review_blocks:
-            text = blk.select_one(".mt-0")
-            rating = blk.select_one(".gdStars")
-            out.append({
-                "site": "Glassdoor",
-                "text": text.get_text(strip=True) if text else "",
-                "rating": float(rating.get("title").split()[0]) if rating else None,
-                "url": search_url,
-                "author": "",
-                "time": ""
-            })
-    except Exception as e:
-        if debug_mode:
-            st.write(f"[fetch_glassdoor_reviews] Error: {e}")
-    return out
-
-# -----------------------------
 # GOOGLE PLACES REVIEWS
 # -----------------------------
 @st.cache_data(ttl=3600)
-def fetch_google_places_reviews(place_name, city=None):
-    if not GOOGLE_PLACES_KEY:
+def fetch_google_places_reviews(query):
+    if not API_KEY:
         return []
-    query = f"{place_name} {city or ''}"
-    search_url = f"https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input={quote_plus(query)}&inputtype=textquery&fields=place_id,name,rating,user_ratings_total&key={GOOGLE_PLACES_KEY}"
+    search_url = f"https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input={quote_plus(query)}&inputtype=textquery&fields=place_id,name,rating,user_ratings_total&key={API_KEY}"
     try:
         r = requests.get(search_url)
         data = r.json()
@@ -209,7 +128,7 @@ def fetch_google_places_reviews(place_name, city=None):
         if not candidates:
             return []
         place_id = candidates[0]["place_id"]
-        details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,rating,user_ratings_total,reviews,url&key={GOOGLE_PLACES_KEY}"
+        details_url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&fields=name,rating,user_ratings_total,reviews,url&key={API_KEY}"
         r2 = requests.get(details_url)
         details = r2.json().get("result", {})
         reviews = details.get("reviews", [])[:MAX_REVIEWS]
@@ -230,17 +149,60 @@ def fetch_google_places_reviews(place_name, city=None):
         return []
 
 # -----------------------------
+# HEALTHGRADES / GLASSDOOR (HTML)
+# -----------------------------
+@st.cache_data(ttl=3600)
+def fetch_healthgrades_reviews(query):
+    out = []
+    search_url = f"https://www.healthgrades.com/search?query={quote_plus(query)}"
+    try:
+        r = requests.get(search_url, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        review_blocks = soup.select(".review-card")[:MAX_REVIEWS]
+        for blk in review_blocks:
+            text = blk.select_one(".review-text")
+            rating = blk.select_one(".rating-stars")
+            author = blk.select_one(".reviewer-name")
+            out.append({
+                "site": "Healthgrades",
+                "text": text.get_text(strip=True) if text else "",
+                "rating": float(rating.get("data-rating")) if rating else None,
+                "url": search_url,
+                "author": author.get_text(strip=True) if author else "",
+                "time": ""
+            })
+    except:
+        pass
+    return out
+
+@st.cache_data(ttl=3600)
+def fetch_glassdoor_reviews(query):
+    out = []
+    search_url = f"https://www.glassdoor.com/Reviews/{quote_plus(query)}-reviews-SRCH_KE0,50.htm"
+    try:
+        r = requests.get(search_url, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        review_blocks = soup.select(".empReview")[:MAX_REVIEWS]
+        for blk in review_blocks:
+            text = blk.select_one(".mt-0")
+            rating = blk.select_one(".gdStars")
+            out.append({
+                "site": "Glassdoor",
+                "text": text.get_text(strip=True) if text else "",
+                "rating": float(rating.get("title").split()[0]) if rating else None,
+                "url": search_url,
+                "author": "",
+                "time": ""
+            })
+    except:
+        pass
+    return out
+
+# -----------------------------
 # RADAR CHART
 # -----------------------------
 def plot_radar_chart(data_dict):
-    """
-    data_dict example: {"Visibility": 8, "Sentiment":7, "Freshness":5, "Corporate":6}
-    Adapts to system theme
-    """
-    df = {
-        "Metric": list(data_dict.keys()),
-        "Score": list(data_dict.values())
-    }
+    df = {"Metric": list(data_dict.keys()), "Score": list(data_dict.values())}
     theme = "plotly_dark" if st.get_option("theme.base")=="dark" else "plotly_white"
     fig = px.line_polar(df, r="Score", theta="Metric", line_close=True)
     fig.update_traces(fill="toself", line_color="#636EFA")
@@ -261,13 +223,12 @@ if query_input:
     canonical_query = query_input.strip()
     st.subheader(f"Results for: {canonical_query}")
 
-    # Fetch reviews
     yelp_reviews = fetch_yelp_reviews_json(canonical_query)
+    google_reviews = fetch_google_places_reviews(canonical_query)
     hg_reviews = fetch_healthgrades_reviews(canonical_query)
     gd_reviews = fetch_glassdoor_reviews(canonical_query)
-    google_reviews = fetch_google_places_reviews(canonical_query)
 
-    all_reviews = yelp_reviews + hg_reviews + gd_reviews + google_reviews
+    all_reviews = yelp_reviews + google_reviews + hg_reviews + gd_reviews
 
     if all_reviews:
         st.write(f"Found {len(all_reviews)} reviews across multiple sites:")
@@ -276,16 +237,14 @@ if query_input:
     else:
         st.info("No reviews found for this query.")
 
-    # Radar chart example scores (dummy calculation)
     radar_scores = {
-        "Visibility": min(len(all_reviews)/5, 10),
+        "Visibility": min(len(all_reviews)/5,10),
         "Sentiment": min(sum([r.get("rating") or 0 for r in all_reviews])/len(all_reviews),10) if all_reviews else 0,
         "Freshness": 8,
         "Corporate": 7
     }
     st.plotly_chart(plot_radar_chart(radar_scores), use_container_width=True)
 
-    # Tips
     with st.expander("💡 Brand Improvement Tips"):
         tips = []
         if radar_scores["Visibility"] < 5:
@@ -302,15 +261,12 @@ if query_input:
         else:
             st.markdown("All metrics look good!")
 
-    # Debug expander
     if debug_mode:
         with st.expander("🐞 Debug Information"):
             st.write("Canonical query:", canonical_query)
             st.write("All reviews fetched:", all_reviews)
 
-    # Sources tab
     with st.expander("🌐 Sources / Validation Links"):
         urls = [rv.get("url") for rv in all_reviews if rv.get("url")]
         for u in urls:
             st.markdown(f"- [Link]({u})")
-
